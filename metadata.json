@@ -1,0 +1,8 @@
+{
+  "name": "French Verb Conjugation Dashboard",
+  "description": "An interactive learning dashboard for mastering French verb conjugations across tenses, groups, and practice drills.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
