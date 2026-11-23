@@ -511,6 +511,83 @@ export function searchAnyFrenchVerb(query: string, limit = 12): VerbSearchResult
   return results;
 }
 
+export interface FrenchQueryMatch {
+  id: string;
+  infinitive: string;
+  english: string;
+  conjugatedForm?: string;
+  tenseName?: string;
+  kind: 'infinitive' | 'conjugated';
+}
+
+const normalizeFrenchSearch = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[’']/g, "'")
+    .replace(/\s+/g, ' ');
+
+// Reverse-search a user-typed conjugated form across the library.
+// Curated verbs are checked first for a fast, reliable answer; external
+// verbs are checked only until the requested result limit is reached.
+export function searchFrenchConjugatedForms(query: string, limit = 8): FrenchQueryMatch[] {
+  const q = normalizeFrenchSearch(query);
+  if (!q || q.includes(' ') || q.length < 2) return [];
+
+  const tenseChecks: Array<{ id: TenseId; name: string }> = [
+    { id: 'present', name: 'Présent' },
+    { id: 'passeCompose', name: 'Passé Composé' },
+    { id: 'imparfait', name: 'Imparfait' },
+    { id: 'futurSimple', name: 'Futur Simple' },
+    { id: 'conditionnel', name: 'Conditionnel' },
+    { id: 'subjonctif', name: 'Subjonctif' },
+    { id: 'imperatif', name: 'Impératif' },
+  ];
+  const matches: FrenchQueryMatch[] = [];
+  const seen = new Set<string>();
+
+  const checkVerb = (verb: Verb) => {
+    for (const tense of tenseChecks) {
+      for (const form of verb.conjugations[tense.id] || []) {
+        const candidates = [
+          normalizeFrenchSearch(form.form),
+          normalizeFrenchSearch(form.form.replace(/^[a-zàâäçéèêëîïôöùûüÿ]+[' ]/i, '')),
+          normalizeFrenchSearch(form.form.replace(/^je\s+|^tu\s+|^il\s+|^elle\s+|^on\s+|^nous\s+|^vous\s+|^ils\s+|^elles\s+/, '').trim()),
+        ];
+        if (candidates.some((candidate) => candidate === q)) {
+          const key = `${verb.id}:${tense.id}:${form.form}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            matches.push({
+              id: verb.id,
+              infinitive: verb.infinitive,
+              english: verb.english,
+              conjugatedForm: form.form,
+              tenseName: tense.name,
+              kind: 'conjugated',
+            });
+          }
+        }
+      }
+      if (matches.length >= limit) return true;
+    }
+    return false;
+  };
+
+  for (const verb of ALL_VERBS) {
+    if (checkVerb(verb)) return matches;
+  }
+
+  for (const key of ALL_FRENCH_VERB_KEYS) {
+    const verb = conjugateVerbFromLibrary(key);
+    if (checkVerb(verb)) break;
+  }
+
+  return matches;
+}
+
 // Get or dynamically conjugate a verb from either curated or external library
 export function getVerbByInfinitiveOrId(idOrInfinitive: string): Verb | null {
   if (!idOrInfinitive) return null;

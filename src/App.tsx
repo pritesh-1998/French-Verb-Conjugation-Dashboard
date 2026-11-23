@@ -17,6 +17,8 @@ import { QuizMode } from './components/QuizMode';
 import { FlashcardMode } from './components/FlashcardMode';
 import { GrammarRules } from './components/GrammarRules';
 import { VerbDetailModal } from './components/VerbDetailModal';
+import { PracticeDashboard } from './components/PracticeDashboard';
+import { DashboardFrenchSearch } from './components/DashboardFrenchSearch';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<ViewTab>('dashboard');
@@ -96,13 +98,13 @@ export default function App() {
         currentTab={currentTab}
         onSelectTab={(tab) => {
           setCurrentTab(tab);
-          if (tab !== 'library') setSearchQuery('');
+          if (tab !== 'library' && tab !== 'practice') setSearchQuery('');
         }}
         stats={stats}
         searchQuery={searchQuery}
         onSearchChange={(q) => {
           setSearchQuery(q);
-          if (currentTab !== 'library' && q.trim()) {
+          if (currentTab !== 'dashboard' && currentTab !== 'library' && currentTab !== 'practice' && q.trim()) {
             setCurrentTab('library');
           }
         }}
@@ -114,19 +116,27 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {currentTab === 'dashboard' && (
-          <DashboardOverview
-            stats={stats}
-            progress={progress}
-            allVerbs={ALL_VERBS}
-            verbOfTheDay={verbOfTheDay}
-            onSelectVerb={(v) => setSelectedVerb(v)}
-            onToggleBookmark={handleToggleBookmark}
-            onStartQuiz={handleStartGeneralQuiz}
-            onViewLibrary={() => setCurrentTab('library')}
-            onReviewStruggling={handleReviewStruggling}
-            onOpenFlashcards={() => setCurrentTab('flashcards')}
-            onViewFavorites={() => setCurrentTab('favorites')}
-          />
+          <div className="space-y-8">
+            <DashboardFrenchSearch
+              searchQuery={searchQuery}
+              onSearchChange={setSearchQuery}
+              onSelectVerb={(v) => setSelectedVerb(v)}
+              onOpenPractice={() => setCurrentTab('practice')}
+            />
+            <DashboardOverview
+              stats={stats}
+              progress={progress}
+              allVerbs={ALL_VERBS}
+              verbOfTheDay={verbOfTheDay}
+              onSelectVerb={(v) => setSelectedVerb(v)}
+              onToggleBookmark={handleToggleBookmark}
+              onStartQuiz={handleStartGeneralQuiz}
+              onViewLibrary={() => setCurrentTab('library')}
+              onReviewStruggling={handleReviewStruggling}
+              onOpenFlashcards={() => setCurrentTab('flashcards')}
+              onViewFavorites={() => setCurrentTab('favorites')}
+            />
+          </div>
         )}
 
         {currentTab === 'library' && (
@@ -172,6 +182,12 @@ export default function App() {
         )}
 
         {currentTab === 'rules' && <GrammarRules />}
+        {currentTab === 'practice' && (
+          <PracticeDashboard
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+          />
+        )}
       </main>
 
       {/* Modal Inspector for Verb Conjugations */}

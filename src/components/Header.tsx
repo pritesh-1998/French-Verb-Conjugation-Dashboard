@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ViewTab, UserStats, Verb } from '../types';
-import { Flame, Award, BookOpen, Layers, HelpCircle, LayoutDashboard, Search, X, Sparkles, Volume2, ArrowRight, Bookmark } from 'lucide-react';
+import { Flame, Award, BookOpen, Layers, HelpCircle, LayoutDashboard, Search, X, Sparkles, Volume2, ArrowRight, Bookmark, Dumbbell } from 'lucide-react';
 import { speakFrench } from '../utils/speech';
-import { searchAnyFrenchVerb, conjugateVerbFromLibrary, TOTAL_EXTERNAL_VERBS_COUNT } from '../utils/conjugator';
+import { searchAnyFrenchVerb, searchFrenchConjugatedForms, conjugateVerbFromLibrary, TOTAL_EXTERNAL_VERBS_COUNT } from '../utils/conjugator';
 
 interface HeaderProps {
   currentTab: ViewTab;
@@ -38,7 +38,21 @@ export const Header: React.FC<HeaderProps> = ({
   // Search across all 7,014 French verbs using the external library & curated database
   const suggestions = React.useMemo(() => {
     if (!searchQuery.trim()) return [];
-    return searchAnyFrenchVerb(searchQuery, 10);
+    const infinitiveMatches = searchAnyFrenchVerb(searchQuery, 6);
+    const conjugatedMatches = searchFrenchConjugatedForms(searchQuery, 4);
+    return [
+      ...conjugatedMatches.map((match) => ({
+        id: match.id,
+        infinitive: match.infinitive,
+        english: match.english,
+        group: 3 as 1 | 2 | 3,
+        auxiliary: 'avoir' as 'avoir' | 'être',
+        isCurated: false,
+        conjugatedForm: match.conjugatedForm,
+        tenseName: match.tenseName,
+      })),
+      ...infinitiveMatches.map((match) => ({ ...match, conjugatedForm: undefined, tenseName: undefined })),
+    ].slice(0, 10);
   }, [searchQuery]);
 
   // Close dropdown on click outside
@@ -75,10 +89,9 @@ export const Header: React.FC<HeaderProps> = ({
           onSelectVerb(fullVerb);
           setIsOpen(false);
         }
-      } else if (searchQuery.trim() && onSelectVerb) {
-        // Fallback: try to conjugate whatever string was typed directly
-        const fullVerb = conjugateVerbFromLibrary(searchQuery.trim());
-        onSelectVerb(fullVerb);
+      } else if (searchQuery.trim()) {
+        // Words and sentences are handled by the Practice search page.
+        onSelectTab('practice');
         setIsOpen(false);
       }
     } else if (e.key === 'Escape') {
@@ -251,6 +264,18 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="font-serif font-bold text-xs">§</span>
               <span>Grammar Rules</span>
             </button>
+            <button
+              type="button"
+              onClick={() => onSelectTab('practice')}
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
+                currentTab === 'practice'
+                  ? 'bg-stone-900 text-white shadow-xs font-semibold'
+                  : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
+              }`}
+            >
+              <Dumbbell className="w-4 h-4 text-indigo-500" />
+              <span>Practice</span>
+            </button>
           </nav>
 
           {/* Quick Filter & Global Verb Search with Auto-Conjugation on Enter */}
@@ -336,6 +361,11 @@ export const Header: React.FC<HeaderProps> = ({
                             <div className="text-xs text-stone-500 truncate italic">
                               "{verb.english}"
                             </div>
+                            {verb.conjugatedForm && verb.tenseName && (
+                              <div className="text-[11px] font-mono text-indigo-700 mt-0.5">
+                                {verb.conjugatedForm} · {verb.tenseName}
+                              </div>
+                            )}
                           </div>
                         </div>
 

@@ -126,4 +126,4 @@ export interface QuizResult {
   details?: string;
 }
 
-export type ViewTab = 'dashboard' | 'library' | 'favorites' | 'quiz' | 'flashcards' | 'rules';
+export type ViewTab = 'dashboard' | 'library' | 'favorites' | 'quiz' | 'flashcards' | 'rules' | 'practice';

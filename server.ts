@@ -164,6 +164,127 @@ app.post('/api/tts/batch', async (req, res) => {
   res.json({ processed: results.length, results });
 });
 
+/**
+ * French vocabulary and sentence explanation endpoint.
+ * The API key is server-only and the response is constrained to concise study data.
+ */
+app.post('/api/french/explain', async (req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
+  if (!text) {
+    res.status(400).json({ error: 'Missing French text' });
+    return;
+  }
+  if (text.length > 500) {
+    res.status(400).json({ error: 'Please use 500 characters or fewer' });
+    return;
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    const words = text
+      .replace(/[.!?,;]/g, '')
+      .split(/\s+/)
+      .filter((word) => word.length > 1)
+      .slice(0, 8);
+    const isSentence = text.includes(' ') || /[.!?]/.test(text);
+    res.json({
+      translation: isSentence
+        ? 'French sentence explanation is available; configure GEMINI_API_KEY for a precise natural-language translation.'
+        : 'English translation is available when GEMINI_API_KEY is configured.',
+      pronunciation: 'Use the Listen button to hear the French pronunciation.',
+      ipa: '',
+      partOfSpeech: isSentence ? 'French sentence' : 'French word',
+      grammar: isSentence
+        ? 'Look for the subject, verb, tense, negation, and agreement in the sentence.'
+        : 'Check gender (noun), conjugation (verb), or agreement (adjective) when using this word.',
+      vocabulary: words.map((word) => ({
+        word,
+        meaning: 'Meaning available with Gemini vocabulary analysis',
+        partOfSpeech: 'French vocabulary',
+      })),
+      example: text,
+      exampleMeaning: 'Listen and repeat the French text naturally.',
+    });
+    return;
+  }
+
+  const prompt = `You are a French language tutor. Analyze this French text: "${text.replace(/"/g, '\\"')}". Return valid JSON only with this shape:
+{
+  "translation": "natural English meaning",
+  "pronunciation": "simple readable pronunciation guidance",
+  "ipa": "IPA for the text if useful, otherwise empty",
+  "partOfSpeech": "for a single word, or sentence type for a sentence",
+  "grammar": "concise useful grammar note",
+  "vocabulary": [{"word":"French word","meaning":"English meaning","partOfSpeech":"noun/verb/etc"}],
+  "example": "one short French example sentence",
+  "exampleMeaning": "English meaning"
+}
+For sentences, explain the core vocabulary and tense/grammar in 3-6 vocabulary entries. For a single word, focus on meaning, pronunciation, gender if applicable, and 1-2 examples.`;
+
+  try {
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: 'application/json',
+          },
+        }),
+        signal: AbortSignal.timeout(30000),
+      }
+    );
+
+    if (!response.ok) {
+      const details = await response.text();
+      console.error('Gemini explanation API error:', response.status, details);
+      const words = text.replace(/[.!?,;]/g, '').split(/\s+/).filter((word) => word.length > 1).slice(0, 8);
+      res.json({
+        translation: 'Automatic translation is temporarily unavailable because Gemini is busy.',
+        pronunciation: 'Use the Listen button to hear the French pronunciation.',
+        ipa: '',
+        partOfSpeech: text.includes(' ') ? 'French sentence' : 'French word',
+        grammar: 'Review the subject, verb tense, negation, and agreement when studying this text.',
+        vocabulary: words.map((word) => ({ word, meaning: 'Meaning temporarily unavailable', partOfSpeech: 'French vocabulary' })),
+        example: text,
+        exampleMeaning: 'Listen and repeat the French text naturally.',
+      });
+      return;
+    }
+
+    const payload = await response.json() as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const raw = payload.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!raw) {
+      res.status(502).json({ error: 'French explanation service returned no result' });
+      return;
+    }
+
+    const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    res.json(JSON.parse(cleaned));
+  } catch (err: any) {
+    console.error('French explanation error:', err?.message || err);
+    const words = text.replace(/[.!?,;]/g, '').split(/\s+/).filter((word) => word.length > 1).slice(0, 8);
+    res.json({
+      translation: 'Automatic translation is temporarily unavailable.',
+      pronunciation: 'Use the Listen button to hear the French pronunciation.',
+      ipa: '',
+      partOfSpeech: text.includes(' ') ? 'French sentence' : 'French word',
+      grammar: 'Review the subject, verb tense, negation, and agreement when studying this text.',
+      vocabulary: words.map((word) => ({ word, meaning: 'Meaning temporarily unavailable', partOfSpeech: 'French vocabulary' })),
+      example: text,
+      exampleMeaning: 'Listen and repeat the French text naturally.',
+    });
+  }
+});
+
 async function startServer() {
   // Vite middleware for development vs static build in production
   if (process.env.NODE_ENV !== 'production') {
