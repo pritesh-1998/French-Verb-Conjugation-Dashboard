@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { speakFrench } from '../utils/speech';
+import { fetchExplanation } from '../utils/explainClient';
 
 interface PracticeDashboardProps {
   searchQuery: string;
@@ -97,13 +98,7 @@ export const PracticeDashboard: React.FC<PracticeDashboardProps> = ({
     setExplanationError('');
     setExplanation(null);
     try {
-      const response = await fetch('/api/french/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: query }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not explain that text');
+      const data = await fetchExplanation(query);
       setExplanation(data);
     } catch (error) {
       setExplanationError(error instanceof Error ? error.message : 'Could not explain that text');

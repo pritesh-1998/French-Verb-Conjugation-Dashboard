@@ -7,6 +7,7 @@ import {
   searchFrenchConjugatedForms,
 } from '../utils/conjugator';
 import { speakFrench } from '../utils/speech';
+import { fetchExplanation } from '../utils/explainClient';
 import type { VerbSearchResults } from '../hooks/useVerbSearch';
 
 interface Explanation {
@@ -69,13 +70,7 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
     setExplanation(null);
     setResultLabel('Language explanation');
     try {
-      const response = await fetch('/api/french/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Could not explain this text');
+      const data = await fetchExplanation(text);
       setExplanation(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not explain this text');
