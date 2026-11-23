@@ -133,17 +133,14 @@ export const Header: React.FC<HeaderProps> = ({
                   Studio
                 </span>
               </div>
-              <p className="text-xs text-stone-600 hidden md:block">
-                Master French verb conjugations across all tenses, moods & groups • {TOTAL_EXTERNAL_VERBS_COUNT.toLocaleString()} verbs library
-              </p>
             </div>
           </div>
 
           {/* Quick Metrics Bar */}
-          <div className="flex items-center gap-2 sm:gap-4">
+          <div className="flex items-center gap-2 sm:gap-3">
             {/* Streak Counter */}
             <div
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200/80 text-amber-900 text-xs font-semibold shadow-xs"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-amber-50 border border-amber-200/80 text-amber-900 text-xs font-semibold shadow-2xs"
               title="Consecutive daily study streak"
             >
               <Flame className="w-4 h-4 text-amber-500 fill-amber-500" />
@@ -152,70 +149,77 @@ export const Header: React.FC<HeaderProps> = ({
 
             {/* Total Practiced & Accuracy */}
             <div
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-stone-100 border border-stone-200 text-stone-800 text-xs font-medium shadow-xs"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-stone-100 border border-stone-200 text-stone-800 text-xs font-medium shadow-2xs"
               title="Overall conjugation accuracy"
             >
               <Award className="w-3.5 h-3.5 text-indigo-600" />
-              <span className="hidden sm:inline">Practiced:</span>
+              <span className="hidden sm:inline">Score:</span>
               <strong className="font-semibold text-stone-900">{stats.totalAnswered}</strong>
               {stats.totalAnswered > 0 && (
-                <span className="text-stone-600 font-mono text-[11px]">
+                <span className="text-stone-500 font-mono text-[11px]">
                   ({accuracy}%)
                 </span>
               )}
-            </div>
-
-            {/* Native French Audio Indicator */}
-            <div
-              className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-indigo-50 border border-indigo-200 text-indigo-900 text-xs font-medium shadow-xs"
-              title="Authentic Native French pronunciation with Parisian phonetics & liaisons"
-            >
-              <Volume2 className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Native French Audio</span>
             </div>
           </div>
         </div>
 
         {/* Lower tier: Navigation and Search */}
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 py-2.5">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 py-2">
           {/* Nav Tabs */}
           <nav className="flex items-center gap-1 overflow-x-auto pb-1 sm:pb-0 scrollbar-none" aria-label="Main Navigation">
             <button
               type="button"
               onClick={() => onSelectTab('dashboard')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
                 currentTab === 'dashboard'
-                  ? 'bg-stone-900 text-white shadow-xs font-semibold'
+                  ? 'bg-stone-900 text-white shadow-2xs font-semibold'
                   : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
               }`}
             >
-              <LayoutDashboard className="w-4 h-4" />
+              <LayoutDashboard className="w-3.5 h-3.5" />
               <span>Dashboard</span>
             </button>
 
             <button
               type="button"
+              onClick={() => onSelectTab('passe-compose')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-semibold transition-all whitespace-nowrap cursor-pointer ${
+                currentTab === 'passe-compose'
+                  ? 'bg-indigo-600 text-white shadow-2xs'
+                  : 'text-indigo-700 bg-indigo-50/70 hover:bg-indigo-100/70 border border-indigo-200/60'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+              <span>Passé Composé</span>
+              <span className="px-1.5 py-0.2 rounded-full text-[9px] font-bold bg-white/20 text-white">
+                Worksheet
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => onSelectTab('library')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
                 currentTab === 'library'
-                  ? 'bg-stone-900 text-white shadow-xs font-semibold'
+                  ? 'bg-stone-900 text-white shadow-2xs font-semibold'
                   : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
               }`}
             >
-              <BookOpen className="w-4 h-4" />
-              <span>Verb Library (7,000+)</span>
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Library</span>
             </button>
 
             <button
               type="button"
               onClick={() => onSelectTab('favorites')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
                 currentTab === 'favorites'
-                  ? 'bg-amber-500 text-stone-950 shadow-xs font-bold'
+                  ? 'bg-amber-500 text-stone-950 shadow-2xs font-bold'
                   : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
               }`}
             >
-              <Bookmark className={`w-4 h-4 ${currentTab === 'favorites' ? 'fill-stone-950 text-stone-950' : 'text-amber-500 fill-amber-500/20'}`} />
+              <Bookmark className={`w-3.5 h-3.5 ${currentTab === 'favorites' ? 'fill-stone-950 text-stone-950' : 'text-amber-500 fill-amber-500/20'}`} />
               <span>Favorites</span>
               {favoriteCount > 0 && (
                 <span
@@ -233,40 +237,40 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               type="button"
               onClick={() => onSelectTab('quiz')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
                 currentTab === 'quiz'
-                  ? 'bg-stone-900 text-white shadow-xs font-semibold'
+                  ? 'bg-stone-900 text-white shadow-2xs font-semibold'
                   : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
               }`}
             >
-              <HelpCircle className="w-4 h-4 text-rose-500" />
-              <span>Practice & Quiz</span>
+              <HelpCircle className="w-3.5 h-3.5 text-rose-500" />
+              <span>Quiz</span>
             </button>
 
             <button
               type="button"
               onClick={() => onSelectTab('flashcards')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
                 currentTab === 'flashcards'
-                  ? 'bg-stone-900 text-white shadow-xs font-semibold'
+                  ? 'bg-stone-900 text-white shadow-2xs font-semibold'
                   : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
               }`}
             >
-              <Layers className="w-4 h-4" />
+              <Layers className="w-3.5 h-3.5" />
               <span>Flashcards</span>
             </button>
 
             <button
               type="button"
               onClick={() => onSelectTab('rules')}
-              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap cursor-pointer ${
                 currentTab === 'rules'
-                  ? 'bg-stone-900 text-white shadow-xs font-semibold'
+                  ? 'bg-stone-900 text-white shadow-2xs font-semibold'
                   : 'text-stone-600 hover:text-stone-900 hover:bg-stone-200/60'
               }`}
             >
               <span className="font-serif font-bold text-xs">§</span>
-              <span>Grammar Rules</span>
+              <span>Rules</span>
             </button>
             <button
               type="button"
