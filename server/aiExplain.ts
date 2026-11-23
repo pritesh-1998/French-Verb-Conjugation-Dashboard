@@ -30,15 +30,19 @@ export class ExplainError extends Error {
 }
 
 // Free models change often; override with OPENROUTER_MODELS (comma-separated) without a code change.
-// `openrouter/free` is OpenRouter's router that picks any available free model, used as the last resort.
+// Order (2026-11-23):
+//   1. Nemotron 3.5 Lightning: fast (~0.5 s to first token, ~115 tok/s), plenty for word/sentence notes.
+//   2. Nemotron 3 Ultra: much stronger reasoning, slower (~1.3 s, ~47 tok/s); used when Lightning fails.
+//   3. Nemotron 3.5 Super VL, then `openrouter/free` (any available free model) as last resorts.
+// Note: NVIDIA's free endpoints log prompts to improve their products, so never send personal data.
 const DEFAULT_OPENROUTER_MODELS = [
-  'nvidia/nemotron-3.5-super-vl:free',
-  'inclusionai/ling-3.2-flash:free',
   'nvidia/nemotron-3.5-lightning:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'nvidia/nemotron-3.5-super-vl:free',
   'openrouter/free',
 ];
 
-const REQUEST_TIMEOUT_MS = 15000;
+const REQUEST_TIMEOUT_MS = 20000;
 
 const CACHE_FILE = process.env.EXPLAIN_CACHE_FILE || path.join(process.cwd(), '.cache', 'explanations.json');
 const MAX_CACHE_ENTRIES = 5000;
@@ -146,7 +150,10 @@ async function tryOpenRouter(text: string, apiKey: string, model: string): Promi
         model,
         messages: [{ role: 'user', content: buildPrompt(text) }],
         temperature: 0.2,
-        max_tokens: 900,
+        // Reasoning models (Ultra) spend tokens thinking before answering: keep it short and
+        // leave room for the JSON. Models without reasoning ignore this field.
+        reasoning: { effort: 'low', exclude: true },
+        max_tokens: 2000,
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
