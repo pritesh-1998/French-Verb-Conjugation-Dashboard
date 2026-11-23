@@ -182,8 +182,13 @@ app.post('/api/french/explain', async (req, res) => {
   }
 
   try {
-    const { explanation, cached } = await explainFrench(text);
-    res.set('X-Explain-Source', cached ? 'cache' : 'ai');
+    const { explanation, cached, source, ms } = await explainFrench(text);
+    res.set({
+      'X-Explain-Source': cached ? 'cache' : 'ai',
+      'X-Explain-Model': source,
+      'X-Explain-Ms': String(ms),
+      'Access-Control-Expose-Headers': 'X-Explain-Source, X-Explain-Model, X-Explain-Ms',
+    });
     res.json(explanation);
   } catch (err: any) {
     if (err instanceof ExplainError) {
