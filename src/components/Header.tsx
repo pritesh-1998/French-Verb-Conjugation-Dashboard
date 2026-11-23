@@ -2,13 +2,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ViewTab, UserStats, Verb } from '../types';
 import { Flame, Award, BookOpen, Layers, HelpCircle, LayoutDashboard, Search, X, Sparkles, Volume2, ArrowRight, Bookmark, Dumbbell } from 'lucide-react';
 import { speakFrench } from '../utils/speech';
-import { searchAnyFrenchVerb, searchFrenchConjugatedForms, conjugateVerbFromLibrary, TOTAL_EXTERNAL_VERBS_COUNT } from '../utils/conjugator';
+import { conjugateVerbFromLibrary, TOTAL_EXTERNAL_VERBS_COUNT } from '../utils/conjugator';
+import type { VerbSearchResults } from '../hooks/useVerbSearch';
 
 interface HeaderProps {
   currentTab: ViewTab;
   onSelectTab: (tab: ViewTab) => void;
   stats: UserStats;
   searchQuery: string;
+  searchResults: VerbSearchResults;
   onSearchChange: (q: string) => void;
   allVerbs?: Verb[];
   onSelectVerb?: (verb: Verb) => void;
@@ -20,6 +22,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectTab,
   stats,
   searchQuery,
+  searchResults,
   onSearchChange,
   allVerbs = [],
   onSelectVerb,
@@ -36,10 +39,11 @@ export const Header: React.FC<HeaderProps> = ({
       : 0;
 
   // Search across all 7,014 French verbs using the external library & curated database
+  // Results come from the shared, debounced search in App (useVerbSearch).
   const suggestions = React.useMemo(() => {
     if (!searchQuery.trim()) return [];
-    const infinitiveMatches = searchAnyFrenchVerb(searchQuery, 6);
-    const conjugatedMatches = searchFrenchConjugatedForms(searchQuery, 4);
+    const infinitiveMatches = searchResults.infinitives;
+    const conjugatedMatches = searchResults.conjugated;
     return [
       ...conjugatedMatches.map((match) => ({
         id: match.id,
@@ -53,7 +57,7 @@ export const Header: React.FC<HeaderProps> = ({
       })),
       ...infinitiveMatches.map((match) => ({ ...match, conjugatedForm: undefined, tenseName: undefined })),
     ].slice(0, 10);
-  }, [searchQuery]);
+  }, [searchQuery, searchResults]);
 
   // Close dropdown on click outside
   useEffect(() => {

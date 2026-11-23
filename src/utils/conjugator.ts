@@ -233,8 +233,19 @@ export function getEnglishTranslation(infinitive: string): string {
   return `to ${infinitive} (French verb)`;
 }
 
-// Cache of dynamically generated Verb objects
+// Cache of dynamically generated Verb objects.
+// Capped (least recently used is evicted) so browsing many verbs cannot grow memory without bound.
 const DYNAMIC_VERB_CACHE = new Map<string, Verb>();
+const DYNAMIC_VERB_CACHE_LIMIT = 300;
+
+function rememberVerb(key: string, verb: Verb): void {
+  DYNAMIC_VERB_CACHE.delete(key);
+  DYNAMIC_VERB_CACHE.set(key, verb);
+  if (DYNAMIC_VERB_CACHE.size > DYNAMIC_VERB_CACHE_LIMIT) {
+    const oldest = DYNAMIC_VERB_CACHE.keys().next().value;
+    if (oldest !== undefined) DYNAMIC_VERB_CACHE.delete(oldest);
+  }
+}
 
 // Pronoun labels for UI display
 const PRONOUN_DISPLAYS: Record<number, string> = {
@@ -340,17 +351,26 @@ export function conjugateVerbFromLibrary(infinitive: string): Verb {
   const normalized = infinitive.trim().toLowerCase();
 
   // Check cache first
-  if (DYNAMIC_VERB_CACHE.has(normalized)) {
-    return DYNAMIC_VERB_CACHE.get(normalized)!;
+  const cached = DYNAMIC_VERB_CACHE.get(normalized);
+  if (cached) {
+    rememberVerb(normalized, cached);
+    return cached;
   }
 
   // Check curated list
   const existing = ALL_VERBS.find((v) => v.infinitive.toLowerCase() === normalized);
   if (existing) {
-    DYNAMIC_VERB_CACHE.set(normalized, existing);
+    rememberVerb(normalized, existing);
     return existing;
   }
 
+  const verbObj = buildLibraryVerb(normalized);
+  rememberVerb(normalized, verbObj);
+  return verbObj;
+}
+
+// Build a Verb from the library without touching the cache.
+function buildLibraryVerb(normalized: string): Verb {
   const entry = VERB_ENTRIES[normalized];
   const template = entry?.t;
   const group = detectVerbGroup(normalized, template);
@@ -424,7 +444,6 @@ export function conjugateVerbFromLibrary(infinitive: string): Verb {
         : `3rd group irregular verb with auxiliary "${auxiliary}". Check root stems for future and subjunctive tenses.`,
   };
 
-  DYNAMIC_VERB_CACHE.set(normalized, verbObj);
   return verbObj;
 }
 
@@ -529,61 +548,153 @@ const normalizeFrenchSearch = (value: string): string =>
     .replace(/[’']/g, "'")
     .replace(/\s+/g, ' ');
 
-// Reverse-search a user-typed conjugated form across the library.
-// Curated verbs are checked first for a fast, reliable answer; external
-// verbs are checked only until the requested result limit is reached.
+const FORM_TENSES: Array<{ id: TenseId; name: string }> = [
+  { id: 'present', name: 'Présent' },
+  { id: 'passeCompose', name: 'Passé Composé' },
+  { id: 'imparfait', name: 'Imparfait' },
+  { id: 'futurSimple', name: 'Futur Simple' },
+  { id: 'conditionnel', name: 'Conditionnel' },
+  { id: 'subjonctif', name: 'Subjonctif' },
+  { id: 'imperatif', name: 'Impératif' },
+];
+
+// The ways a typed word can match one conjugated form: the full form ("j'aime"),
+// the form without its pronoun ("aime"). Multi-word keys are skipped because
+// searches containing a space are not reverse-searched.
+function formSearchKeys(form: string): string[] {
+  const keys = new Set([
+    normalizeFrenchSearch(form),
+    normalizeFrenchSearch(form.replace(/^[a-zàâäçéèêëîïôöùûüÿ]+[' ]/i, '')),
+    normalizeFrenchSearch(form.replace(/^je\s+|^tu\s+|^il\s+|^elle\s+|^on\s+|^nous\s+|^vous\s+|^ils\s+|^elles\s+/, '').trim()),
+  ]);
+  return [...keys].filter((key) => key && !key.includes(' '));
+}
+
+// A hit is packed as one number: verb index * 100 + tense index * 10 + person index.
+const packHit = (verbIdx: number, tenseIdx: number, personIdx: number) => verbIdx * 100 + tenseIdx * 10 + personIdx;
+
+function addVerbToIndex(index: Map<string, number[]>, verb: Verb, verbIdx: number): void {
+  FORM_TENSES.forEach((tense, tenseIdx) => {
+    (verb.conjugations[tense.id] || []).forEach((form, personIdx) => {
+      for (const key of formSearchKeys(form.form)) {
+        const hits = index.get(key);
+        const hit = packHit(verbIdx, tenseIdx, personIdx);
+        if (!hits) index.set(key, [hit]);
+        else if (hits[hits.length - 1] !== hit) hits.push(hit);
+      }
+    });
+  });
+}
+
+// Curated verbs: small, so indexed synchronously on first search.
+let curatedFormIndex: Map<string, number[]> | null = null;
+function getCuratedFormIndex(): Map<string, number[]> {
+  if (!curatedFormIndex) {
+    curatedFormIndex = new Map();
+    ALL_VERBS.forEach((verb, idx) => addVerbToIndex(curatedFormIndex!, verb, idx));
+  }
+  return curatedFormIndex;
+}
+
+// Library verbs (~7,000): indexed once, in small slices, so the page never freezes.
+// Before this index finishes, only curated verbs are found; listeners are told when it is ready.
+const CURATED_INFINITIVES = new Set(ALL_VERBS.map((v) => v.infinitive.toLowerCase()));
+const LIBRARY_INDEX_KEYS = ALL_FRENCH_VERB_KEYS.filter((key) => !CURATED_INFINITIVES.has(key));
+const libraryFormIndex = new Map<string, number[]>();
+let libraryIndexedCount = 0;
+let libraryIndexPromise: Promise<void> | null = null;
+const libraryIndexListeners = new Set<() => void>();
+
+export function isFrenchFormIndexReady(): boolean {
+  return libraryIndexedCount >= LIBRARY_INDEX_KEYS.length;
+}
+
+export function onFrenchFormIndexReady(listener: () => void): () => void {
+  if (isFrenchFormIndexReady()) {
+    listener();
+    return () => {};
+  }
+  libraryIndexListeners.add(listener);
+  return () => libraryIndexListeners.delete(listener);
+}
+
+function indexLibrarySlice(budgetMs: number): void {
+  const deadline = performance.now() + budgetMs;
+  while (libraryIndexedCount < LIBRARY_INDEX_KEYS.length && performance.now() < deadline) {
+    const idx = libraryIndexedCount++;
+    try {
+      addVerbToIndex(libraryFormIndex, buildLibraryVerb(LIBRARY_INDEX_KEYS[idx]), idx);
+    } catch {
+      // skip the rare verb the library cannot conjugate
+    }
+  }
+}
+
+// Start building the library index in the background (safe to call many times).
+export function warmFrenchFormIndex(): Promise<void> {
+  if (!libraryIndexPromise) {
+    libraryIndexPromise = new Promise((resolve) => {
+      const step = () => {
+        indexLibrarySlice(12);
+        if (isFrenchFormIndexReady()) {
+          libraryIndexListeners.forEach((listener) => listener());
+          libraryIndexListeners.clear();
+          resolve();
+        } else {
+          setTimeout(step, 0);
+        }
+      };
+      step();
+    });
+  }
+  return libraryIndexPromise;
+}
+
+// Build the whole library index right away (used by scripts and tests).
+export function buildFrenchFormIndexSync(): void {
+  indexLibrarySlice(Infinity);
+}
+
+// Reverse-search a user-typed conjugated form ("suis" -> être, suivre).
+// Uses precomputed indexes, so each search is a couple of map lookups.
 export function searchFrenchConjugatedForms(query: string, limit = 8): FrenchQueryMatch[] {
   const q = normalizeFrenchSearch(query);
   if (!q || q.includes(' ') || q.length < 2) return [];
 
-  const tenseChecks: Array<{ id: TenseId; name: string }> = [
-    { id: 'present', name: 'Présent' },
-    { id: 'passeCompose', name: 'Passé Composé' },
-    { id: 'imparfait', name: 'Imparfait' },
-    { id: 'futurSimple', name: 'Futur Simple' },
-    { id: 'conditionnel', name: 'Conditionnel' },
-    { id: 'subjonctif', name: 'Subjonctif' },
-    { id: 'imperatif', name: 'Impératif' },
-  ];
+  if (!libraryIndexPromise) void warmFrenchFormIndex();
+
   const matches: FrenchQueryMatch[] = [];
   const seen = new Set<string>();
-
-  const checkVerb = (verb: Verb) => {
-    for (const tense of tenseChecks) {
-      for (const form of verb.conjugations[tense.id] || []) {
-        const candidates = [
-          normalizeFrenchSearch(form.form),
-          normalizeFrenchSearch(form.form.replace(/^[a-zàâäçéèêëîïôöùûüÿ]+[' ]/i, '')),
-          normalizeFrenchSearch(form.form.replace(/^je\s+|^tu\s+|^il\s+|^elle\s+|^on\s+|^nous\s+|^vous\s+|^ils\s+|^elles\s+/, '').trim()),
-        ];
-        if (candidates.some((candidate) => candidate === q)) {
-          const key = `${verb.id}:${tense.id}:${form.form}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            matches.push({
-              id: verb.id,
-              infinitive: verb.infinitive,
-              english: verb.english,
-              conjugatedForm: form.form,
-              tenseName: tense.name,
-              kind: 'conjugated',
-            });
-          }
-        }
-      }
-      if (matches.length >= limit) return true;
+  const collect = (hits: number[] | undefined, verbAt: (idx: number) => Verb | null) => {
+    for (const hit of hits || []) {
+      if (matches.length >= limit) return;
+      const verb = verbAt(Math.floor(hit / 100));
+      if (!verb) continue;
+      const tense = FORM_TENSES[Math.floor(hit / 10) % 10];
+      const form = verb.conjugations[tense.id]?.[hit % 10];
+      if (!form) continue;
+      const key = `${verb.id}:${tense.id}:${form.form}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      matches.push({
+        id: verb.id,
+        infinitive: verb.infinitive,
+        english: verb.english,
+        conjugatedForm: form.form,
+        tenseName: tense.name,
+        kind: 'conjugated',
+      });
     }
-    return false;
   };
 
-  for (const verb of ALL_VERBS) {
-    if (checkVerb(verb)) return matches;
-  }
-
-  for (const key of ALL_FRENCH_VERB_KEYS) {
-    const verb = conjugateVerbFromLibrary(key);
-    if (checkVerb(verb)) break;
-  }
+  collect(getCuratedFormIndex().get(q), (idx) => ALL_VERBS[idx] || null);
+  collect(libraryFormIndex.get(q), (idx) => {
+    try {
+      return conjugateVerbFromLibrary(LIBRARY_INDEX_KEYS[idx]);
+    } catch {
+      return null;
+    }
+  });
 
   return matches;
 }

@@ -19,12 +19,23 @@ import { GrammarRules } from './components/GrammarRules';
 import { VerbDetailModal } from './components/VerbDetailModal';
 import { PracticeDashboard } from './components/PracticeDashboard';
 import { DashboardFrenchSearch } from './components/DashboardFrenchSearch';
+import { useVerbSearch } from './hooks/useVerbSearch';
+import { warmFrenchFormIndex } from './utils/conjugator';
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<ViewTab>('dashboard');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedVerb, setSelectedVerb] = useState<Verb | null>(null);
   const [quizFilterVerbIds, setQuizFilterVerbIds] = useState<string[] | undefined>(undefined);
+
+  const searchResults = useVerbSearch(searchQuery);
+
+  // Build the conjugated-form search index in the background once the page is idle.
+  useEffect(() => {
+    const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+    if (idle) idle(() => void warmFrenchFormIndex());
+    else window.setTimeout(() => void warmFrenchFormIndex(), 500);
+  }, []);
 
   // Persistence state
   const [stats, setStats] = useState<UserStats>(() => loadUserStats());
@@ -102,6 +113,7 @@ export default function App() {
         }}
         stats={stats}
         searchQuery={searchQuery}
+        searchResults={searchResults}
         onSearchChange={(q) => {
           setSearchQuery(q);
           if (currentTab !== 'dashboard' && currentTab !== 'library' && currentTab !== 'practice' && q.trim()) {
@@ -119,6 +131,7 @@ export default function App() {
           <div className="space-y-8">
             <DashboardFrenchSearch
               searchQuery={searchQuery}
+              searchResults={searchResults}
               onSearchChange={setSearchQuery}
               onSelectVerb={(v) => setSelectedVerb(v)}
               onOpenPractice={() => setCurrentTab('practice')}
