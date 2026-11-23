@@ -7,6 +7,7 @@ import {
   searchFrenchConjugatedForms,
 } from '../utils/conjugator';
 import { speakFrench } from '../utils/speech';
+import type { VerbSearchResults } from '../hooks/useVerbSearch';
 
 interface Explanation {
   translation: string;
@@ -21,6 +22,7 @@ interface Explanation {
 
 interface DashboardFrenchSearchProps {
   searchQuery: string;
+  searchResults: VerbSearchResults;
   onSearchChange: (query: string) => void;
   onSelectVerb: (verb: Verb) => void;
   onOpenPractice: () => void;
@@ -28,6 +30,7 @@ interface DashboardFrenchSearchProps {
 
 export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
   searchQuery,
+  searchResults,
   onSearchChange,
   onSelectVerb,
   onOpenPractice,
@@ -39,8 +42,9 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
 
   const suggestions = useMemo(() => {
     if (!searchQuery.trim()) return [];
-    const infinitives = searchAnyFrenchVerb(searchQuery, 5);
-    const conjugated = searchFrenchConjugatedForms(searchQuery, 4);
+    // Shared, debounced results from App (useVerbSearch); no extra search per keystroke here.
+    const infinitives = searchResults.infinitives;
+    const conjugated = searchResults.conjugated;
     return [
       ...conjugated.map((item) => ({
         key: `form-${item.id}-${item.tenseName}`,
@@ -49,7 +53,7 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
         infinitive: item.infinitive,
       })),
       ...infinitives
-        .filter((item) => item.infinitive.toLowerCase() === searchQuery.trim().toLowerCase())
+        .filter((item) => item.infinitive.toLowerCase() === searchResults.query.trim().toLowerCase())
         .map((item) => ({
           key: `verb-${item.id}`,
           title: item.infinitive,
@@ -57,7 +61,7 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
           infinitive: item.infinitive,
         })),
     ].slice(0, 7);
-  }, [searchQuery]);
+  }, [searchQuery, searchResults]);
 
   const explainText = async (text: string) => {
     setLoading(true);
