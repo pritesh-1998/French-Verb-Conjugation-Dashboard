@@ -30,16 +30,18 @@ export class ExplainError extends Error {
 }
 
 // Free models change often; override with OPENROUTER_MODELS (comma-separated) without a code change.
-// Order (2026-11-23):
-//   1. Nemotron 3.5 Lightning: fast (~0.5 s to first token, ~115 tok/s), plenty for word/sentence notes.
-//   2. Nemotron 3 Ultra: much stronger reasoning, slower (~1.3 s, ~47 tok/s); used when Lightning fails.
-//   3. Nemotron 3.5 Super VL, then `openrouter/free` (any available free model) as last resorts.
+// Order (updated 2026-11-23):
+//   1. Nemotron 3 Ultra: strongest free option, ~1.3 s to first token; reliable in real use.
+//   2. Nemotron 3.5 Super VL, then `openrouter/free` (any available free model).
+//   3. Nemotron 3.5 Lightning last: fast on paper but failing in real use.
+// Not usable here: Perplexity Decider models only return probabilities via a separate
+// Decisions API, they cannot write explanations.
 // Note: NVIDIA's free endpoints log prompts to improve their products, so never send personal data.
 const DEFAULT_OPENROUTER_MODELS = [
-  'nvidia/nemotron-3.5-lightning:free',
   'nvidia/nemotron-3-ultra-550b-a55b:free',
   'nvidia/nemotron-3.5-super-vl:free',
   'openrouter/free',
+  'nvidia/nemotron-3.5-lightning:free',
 ];
 
 const REQUEST_TIMEOUT_MS = 20000;
