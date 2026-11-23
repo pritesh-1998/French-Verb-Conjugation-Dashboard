@@ -321,7 +321,7 @@ export const PracticeDashboard: React.FC<PracticeDashboardProps> = ({
           {explanationLoading && <ExplainLoading text={pendingText} onCancel={cancelExplain} />}
 
           {explanationError && (
-            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{explanationError}</div>
+            <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 whitespace-pre-line break-words">{explanationError}</div>
           )}
 
           {explanation && answerMeta && <ExplainSourceNote source={answerMeta.source} ms={answerMeta.ms} />}

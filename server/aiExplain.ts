@@ -174,7 +174,7 @@ async function tryOpenRouter<T>(task: Task<T>, apiKey: string, model: string, si
         temperature: 0.2,
         // Reasoning models (Ultra) spend tokens thinking before answering: keep it short and
         // leave room for the JSON. Models without reasoning ignore this field.
-        reasoning: { effort: 'low', exclude: true },
+        reasoning: { effort: 'low' },
         max_tokens: 2000,
       }),
       signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
@@ -190,14 +190,24 @@ async function tryOpenRouter<T>(task: Task<T>, apiKey: string, model: string, si
     }
     const payload = (await response.json()) as {
       model?: string;
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: string | null; reasoning?: string | null }; finish_reason?: string }>;
     };
     // Guard against a free id being silently served by a paid model.
     if (payload.model && model.endsWith(':free') && !String(payload.model).startsWith(model.replace(/:free$/, ''))) {
       console.warn(`OpenRouter served ${payload.model} for ${model}`);
     }
-    const parsed = task.parse(payload.choices?.[0]?.message?.content);
-    return parsed ? { ok: parsed } : { provider, error: 'reply was not valid JSON', rateLimited: false };
+    const choice = payload.choices?.[0];
+    const content = choice?.message?.content || '';
+    // Some reasoning models put the final JSON in `reasoning` and leave `content` empty.
+    const parsed = task.parse(content) ?? task.parse(choice?.message?.reasoning || undefined);
+    if (parsed) return { ok: parsed };
+    return {
+      provider,
+      error: !content.trim()
+        ? `empty reply (finish_reason: ${choice?.finish_reason ?? 'unknown'})`
+        : `reply was not valid JSON: ${content.slice(0, 120)}`,
+      rateLimited: false,
+    };
   } catch (err: any) {
     return { provider, error: abortReason(err), rateLimited: false };
   }
@@ -354,13 +364,59 @@ async function runProviders<T>(task: Task<T>): Promise<Answer<T>> {
 
   console.error('All AI providers failed:', attempts);
   const allRateLimited = attempts.length > 0 && attempts.every((a) => a.rateLimited);
-  throw new ExplainError(
-    allRateLimited
-      ? 'The free AI models are at their limit right now (about 50 requests a day, resetting at 00:00 UTC). Try again later.'
-      : 'The free AI models are busy or unavailable right now. Please try again in a minute.',
-    allRateLimited ? 429 : 503,
-    true
-  );
+  if (allRateLimited) {
+    throw new ExplainError(
+      'The free AI models are at their limit right now (about 50 requests a day, resetting at 00:00 UTC). Try again later.',
+      429,
+      true
+    );
+  }
+  throw new ExplainError(describeFailure(attempts), 503, true);
+}
+
+const shortModel = (provider: string) =>
+  provider.replace(/^openrouter:/, '').replace(/^nvidia\//, '').replace(/:free$/, '');
+
+/** Turn provider errors into a message that says what to do. */
+export function describeFailure(attempts: Attempt[]): string {
+  const all = attempts.map((a) => a.error).join('\n');
+  let hint = 'The free AI models are busy or unavailable right now. Please try again in a minute.';
+  if (/HTTP 401|No auth|User not found|invalid.*key/i.test(all)) {
+    hint = 'OpenRouter rejected the API key. Check OPENROUTER_API_KEY in your .env file (no quotes or spaces), then restart the server.';
+  } else if (/HTTP 402/.test(all)) {
+    hint = 'OpenRouter says the account balance is negative, which blocks free models too. Check openrouter.ai/settings/credits.';
+  } else if (/HTTP 404/.test(all) && /data policy|privacy|No endpoints found/i.test(all)) {
+    hint = 'OpenRouter is blocking free models because of your privacy settings. Open openrouter.ai/settings/privacy and allow free endpoints that may train on or publish prompts, then try again.';
+  } else if (/HTTP 404/.test(all)) {
+    hint = 'One or more model names no longer exist on OpenRouter. Set OPENROUTER_MODELS in .env to free models listed at openrouter.ai/models?q=free.';
+  } else if (/empty reply|not valid JSON/.test(all)) {
+    hint = 'The free models answered, but not in the expected format. Please try again; if it keeps happening, try a different model in OPENROUTER_MODELS.';
+  } else if (/timed out/.test(all) && attempts.every((a) => /timed out|cancelled/.test(a.error))) {
+    hint = 'The free models took too long to answer (they are probably queued). Please try again in a minute.';
+  }
+  const details = attempts
+    .filter((a) => !/cancelled/.test(a.error))
+    .map((a) => `• ${shortModel(a.provider)}: ${a.error.replace(/\s+/g, ' ').slice(0, 140)}`)
+    .join('\n');
+  return details ? `${hint}\n\nDetails:\n${details}` : hint;
+}
+
+/** Quick health check of the OpenRouter key and today's free usage. */
+export async function checkOpenRouterKey(): Promise<Record<string, unknown>> {
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return { ok: false, problem: 'OPENROUTER_API_KEY is not set' };
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/key', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    });
+    const body = await response.json().catch(() => ({}));
+    return response.ok
+      ? { ok: true, models: process.env.OPENROUTER_MODELS || DEFAULT_OPENROUTER_MODELS.join(','), key: body?.data ?? body }
+      : { ok: false, status: response.status, problem: body?.error?.message || 'OpenRouter rejected the key' };
+  } catch (err: any) {
+    return { ok: false, problem: `Could not reach OpenRouter: ${err?.message || err}` };
+  }
 }
 
 function remember(key: string, value: unknown): void {
