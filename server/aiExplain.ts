@@ -50,14 +50,15 @@ const HEDGE_DELAY_MS = Number(process.env.EXPLAIN_HEDGE_MS) || 6000;
 
 const CACHE_FILE = process.env.EXPLAIN_CACHE_FILE || path.join(process.cwd(), '.cache', 'explanations.json');
 const MAX_CACHE_ENTRIES = 5000;
-let cache: Map<string, Explanation> | null = null;
+// Holds sentence explanations (key = text) and verb meanings (key = "verb:<infinitive>").
+let cache: Map<string, unknown> | null = null;
 let saveTimer: NodeJS.Timeout | null = null;
 
-function loadCache(): Map<string, Explanation> {
+function loadCache(): Map<string, unknown> {
   if (cache) return cache;
   cache = new Map();
   try {
-    const raw = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')) as Record<string, Explanation>;
+    const raw = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')) as Record<string, unknown>;
     for (const [key, value] of Object.entries(raw)) cache.set(key, value);
   } catch {
     // no cache yet
@@ -102,34 +103,38 @@ Keep every field short (one or two sentences). For sentences, give 3-5 vocabular
 }
 
 // Free models do not all support JSON mode, so pull the first {...} block out of the reply.
-function parseExplanation(raw: string | undefined): Explanation | null {
+function extractJson(raw: string | undefined): any {
   if (!raw) return null;
   const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/```(?:json)?/gi, '');
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
   try {
-    const data = JSON.parse(cleaned.slice(start, end + 1));
-    if (typeof data?.translation !== 'string' || !data.translation.trim()) return null;
-    const str = (v: unknown) => (typeof v === 'string' ? v : '');
-    return {
-      translation: data.translation,
-      pronunciation: str(data.pronunciation),
-      ipa: str(data.ipa),
-      partOfSpeech: str(data.partOfSpeech),
-      grammar: str(data.grammar),
-      vocabulary: Array.isArray(data.vocabulary)
-        ? data.vocabulary
-            .filter((v: any) => v && typeof v.word === 'string')
-            .slice(0, 8)
-            .map((v: any) => ({ word: v.word, meaning: str(v.meaning), partOfSpeech: str(v.partOfSpeech) }))
-        : [],
-      example: str(data.example),
-      exampleMeaning: str(data.exampleMeaning),
-    };
+    return JSON.parse(cleaned.slice(start, end + 1));
   } catch {
     return null;
   }
+}
+
+function parseExplanation(raw: string | undefined): Explanation | null {
+  const data = extractJson(raw);
+  if (typeof data?.translation !== 'string' || !data.translation.trim()) return null;
+  const str = (v: unknown) => (typeof v === 'string' ? v : '');
+  return {
+    translation: data.translation,
+    pronunciation: str(data.pronunciation),
+    ipa: str(data.ipa),
+    partOfSpeech: str(data.partOfSpeech),
+    grammar: str(data.grammar),
+    vocabulary: Array.isArray(data.vocabulary)
+      ? data.vocabulary
+          .filter((v: any) => v && typeof v.word === 'string')
+          .slice(0, 8)
+          .map((v: any) => ({ word: v.word, meaning: str(v.meaning), partOfSpeech: str(v.partOfSpeech) }))
+      : [],
+    example: str(data.example),
+    exampleMeaning: str(data.exampleMeaning),
+  };
 }
 
 interface Attempt {
@@ -140,7 +145,18 @@ interface Attempt {
   accountLimit?: boolean;
 }
 
-async function tryOpenRouter(text: string, apiKey: string, model: string, signal: AbortSignal): Promise<Explanation | Attempt> {
+/** One kind of AI request: the prompt and how to validate the reply. */
+interface Task<T> {
+  prompt: string;
+  parse: (raw: string | undefined) => T | null;
+}
+
+type Outcome<T> = { ok: T } | Attempt;
+
+const abortReason = (err: any) =>
+  err?.name === 'TimeoutError' ? 'timed out' : err?.name === 'AbortError' ? 'cancelled (another model answered)' : String(err?.message || err);
+
+async function tryOpenRouter<T>(task: Task<T>, apiKey: string, model: string, signal: AbortSignal): Promise<Outcome<T>> {
   const provider = `openrouter:${model}`;
   try {
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -152,7 +168,7 @@ async function tryOpenRouter(text: string, apiKey: string, model: string, signal
       },
       body: JSON.stringify({
         model,
-        messages: [{ role: 'user', content: buildPrompt(text) }],
+        messages: [{ role: 'user', content: task.prompt }],
         temperature: 0.2,
         // Reasoning models (Ultra) spend tokens thinking before answering: keep it short and
         // leave room for the JSON. Models without reasoning ignore this field.
@@ -178,14 +194,14 @@ async function tryOpenRouter(text: string, apiKey: string, model: string, signal
     if (payload.model && model.endsWith(':free') && !String(payload.model).startsWith(model.replace(/:free$/, ''))) {
       console.warn(`OpenRouter served ${payload.model} for ${model}`);
     }
-    const parsed = parseExplanation(payload.choices?.[0]?.message?.content);
-    return parsed ?? { provider, error: 'reply was not valid JSON', rateLimited: false };
+    const parsed = task.parse(payload.choices?.[0]?.message?.content);
+    return parsed ? { ok: parsed } : { provider, error: 'reply was not valid JSON', rateLimited: false };
   } catch (err: any) {
-    return { provider, error: err?.name === 'TimeoutError' ? 'timed out' : err?.name === 'AbortError' ? 'cancelled (another model answered)' : String(err?.message || err), rateLimited: false };
+    return { provider, error: abortReason(err), rateLimited: false };
   }
 }
 
-async function tryGemini(text: string, apiKey: string, signal: AbortSignal): Promise<Explanation | Attempt> {
+async function tryGemini<T>(task: Task<T>, apiKey: string, signal: AbortSignal): Promise<Outcome<T>> {
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
   const provider = `gemini:${model}`;
   try {
@@ -193,7 +209,7 @@ async function tryGemini(text: string, apiKey: string, signal: AbortSignal): Pro
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-goog-api-key': apiKey },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: buildPrompt(text) }] }],
+        contents: [{ parts: [{ text: task.prompt }] }],
         generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
       }),
       signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
@@ -205,10 +221,10 @@ async function tryGemini(text: string, apiKey: string, signal: AbortSignal): Pro
     const payload = (await response.json()) as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     };
-    const parsed = parseExplanation(payload.candidates?.[0]?.content?.parts?.[0]?.text);
-    return parsed ?? { provider, error: 'reply was not valid JSON', rateLimited: false };
+    const parsed = task.parse(payload.candidates?.[0]?.content?.parts?.[0]?.text);
+    return parsed ? { ok: parsed } : { provider, error: 'reply was not valid JSON', rateLimited: false };
   } catch (err: any) {
-    return { provider, error: err?.name === 'TimeoutError' ? 'timed out' : err?.name === 'AbortError' ? 'cancelled (another model answered)' : String(err?.message || err), rateLimited: false };
+    return { provider, error: abortReason(err), rateLimited: false };
   }
 }
 
@@ -221,37 +237,45 @@ export interface ExplainResult {
   ms: number;
 }
 
-interface Answer {
-  explanation: Explanation;
+interface Answer<T> {
+  value: T;
   source: string;
 }
 
-const inFlight = new Map<string, Promise<Answer>>();
+const inFlight = new Map<string, Promise<Answer<unknown>>>();
 
-export async function explainFrench(text: string): Promise<ExplainResult> {
+/** Cache lookup, then one shared AI call per key (identical requests at once share it). */
+async function cachedAiCall<T>(key: string, task: Task<T>): Promise<{ value: T; cached: boolean; source: string; ms: number }> {
   const started = Date.now();
-  const key = cacheKeyFor(text);
-  const hit = loadCache().get(key);
-  if (hit) return { explanation: hit, cached: true, source: 'cache', ms: Date.now() - started };
+  const hit = loadCache().get(key) as T | undefined;
+  if (hit) return { value: hit, cached: true, source: 'cache', ms: Date.now() - started };
 
-  // Two identical requests at once share one AI call.
-  let pending = inFlight.get(key);
+  let pending = inFlight.get(key) as Promise<Answer<T>> | undefined;
   if (!pending) {
-    pending = runProviders(text).finally(() => inFlight.delete(key));
+    pending = runProviders(task).finally(() => inFlight.delete(key));
     inFlight.set(key, pending);
   }
   const answer = await pending;
-  return { ...answer, cached: false, ms: Date.now() - started };
+  remember(key, answer.value);
+  return { value: answer.value, source: answer.source, cached: false, ms: Date.now() - started };
 }
 
-type Candidate = { source: string; run: (signal: AbortSignal) => Promise<Explanation | Attempt> };
+export async function explainFrench(text: string): Promise<ExplainResult> {
+  const { value, ...meta } = await cachedAiCall(cacheKeyFor(text), {
+    prompt: buildPrompt(text),
+    parse: parseExplanation,
+  });
+  return { explanation: value, ...meta };
+}
+
+type Candidate<T> = { source: string; run: (signal: AbortSignal) => Promise<Outcome<T>> };
 
 /**
  * Staggered race: start the first model; if it has not answered within HEDGE_DELAY_MS,
  * start the next one too (or immediately, if the first one already failed). The first
  * valid answer wins and the other requests are cancelled.
  */
-function raceCandidates(candidates: Candidate[], attempts: Attempt[]): Promise<Answer | null> {
+function raceCandidates<T>(candidates: Candidate<T>[], attempts: Attempt[]): Promise<Answer<T> | null> {
   return new Promise((resolve) => {
     const controller = new AbortController();
     let next = 0;
@@ -260,7 +284,7 @@ function raceCandidates(candidates: Candidate[], attempts: Attempt[]): Promise<A
     let hedgeTimer: NodeJS.Timeout | null = null;
     let stopLaunching = false;
 
-    const finish = (answer: Answer | null) => {
+    const finish = (answer: Answer<T> | null) => {
       if (done) return;
       done = true;
       if (hedgeTimer) clearTimeout(hedgeTimer);
@@ -281,9 +305,9 @@ function raceCandidates(candidates: Candidate[], attempts: Attempt[]): Promise<A
       candidate.run(controller.signal).then((result) => {
         running--;
         if (done) return;
-        if ('translation' in result) {
-          console.log(`Explanation from ${candidate.source} in ${Date.now() - startedAt} ms`);
-          finish({ explanation: result, source: candidate.source });
+        if ('ok' in result) {
+          console.log(`AI answer from ${candidate.source} in ${Date.now() - startedAt} ms`);
+          finish({ value: result.ok, source: candidate.source });
           return;
         }
         attempts.push(result);
@@ -296,7 +320,7 @@ function raceCandidates(candidates: Candidate[], attempts: Attempt[]): Promise<A
   });
 }
 
-async function runProviders(text: string): Promise<Answer> {
+async function runProviders<T>(task: Task<T>): Promise<Answer<T>> {
   const openRouterKey = process.env.OPENROUTER_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!openRouterKey && !geminiKey) {
@@ -309,30 +333,24 @@ async function runProviders(text: string): Promise<Answer> {
 
   const models = (process.env.OPENROUTER_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean);
   const attempts: Attempt[] = [];
-  const candidates: Candidate[] = [];
+  const candidates: Candidate<T>[] = [];
 
   if (openRouterKey) {
     for (const model of models.length ? models : DEFAULT_OPENROUTER_MODELS) {
-      candidates.push({ source: model, run: (signal) => tryOpenRouter(text, openRouterKey, model, signal) });
+      candidates.push({ source: model, run: (signal) => tryOpenRouter(task, openRouterKey, model, signal) });
     }
   }
   const answer = await raceCandidates(candidates, attempts);
-  if (answer) {
-    remember(text, answer.explanation);
-    return answer;
-  }
+  if (answer) return answer;
 
   if (geminiKey) {
     const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
-    const result = await tryGemini(text, geminiKey, new AbortController().signal);
-    if ('translation' in result) {
-      remember(text, result);
-      return { explanation: result, source: `gemini:${model}` };
-    }
+    const result = await tryGemini(task, geminiKey, new AbortController().signal);
+    if ('ok' in result) return { value: result.ok, source: `gemini:${model}` };
     attempts.push(result);
   }
 
-  console.error('All explanation providers failed:', attempts);
+  console.error('All AI providers failed:', attempts);
   const allRateLimited = attempts.length > 0 && attempts.every((a) => a.rateLimited);
   throw new ExplainError(
     allRateLimited
@@ -343,13 +361,54 @@ async function runProviders(text: string): Promise<Answer> {
   );
 }
 
-function remember(text: string, explanation: Explanation): Explanation {
+function remember(key: string, value: unknown): void {
   const store = loadCache();
-  store.set(cacheKeyFor(text), explanation);
+  store.set(key, value);
   if (store.size > MAX_CACHE_ENTRIES) {
     const oldest = store.keys().next().value;
     if (oldest !== undefined) store.delete(oldest);
   }
   saveCacheSoon();
-  return explanation;
+}
+
+// ---------------------------------------------------------------------------
+// Verb meanings for the ~7,000 library verbs that have no built-in English translation.
+
+export interface VerbInfo {
+  /** English meaning, e.g. "to chat / to gossip". */
+  english: string;
+  /** One short note on usage or register (e.g. informal, reflexive use). */
+  note: string;
+  example: { fr: string; en: string };
+}
+
+function buildVerbPrompt(infinitive: string): string {
+  return `You are a French dictionary for English speakers. The French verb is "${infinitive.replace(/"/g, '')}".
+Reply with ONLY one JSON object, no markdown, in exactly this shape:
+{
+  "english": "the English meaning as 'to ...', with up to 3 common senses separated by ' / '",
+  "note": "one short sentence on how it is used (register, common contexts, reflexive or prepositions if relevant)",
+  "example": {"fr": "one short, natural everyday French sentence using the verb (conjugated)", "en": "its English translation"}
+}`;
+}
+
+function parseVerbInfo(raw: string | undefined): VerbInfo | null {
+  const data = extractJson(raw);
+  if (typeof data?.english !== 'string' || !data.english.trim()) return null;
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const english = str(data.english);
+  return {
+    english: /^to\s/i.test(english) ? english : `to ${english}`,
+    note: str(data.note),
+    example: { fr: str(data.example?.fr), en: str(data.example?.en) },
+  };
+}
+
+export async function lookupVerbInfo(infinitive: string): Promise<{ info: VerbInfo; cached: boolean; source: string; ms: number }> {
+  const clean = infinitive.trim().toLowerCase();
+  const { value, ...meta } = await cachedAiCall(`verb:${clean}`, {
+    prompt: buildVerbPrompt(clean),
+    parse: parseVerbInfo,
+  });
+  return { info: value, ...meta };
 }

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Verb, TenseId } from '../types';
 import { TENSES } from '../data/tenses';
 import { speakFrench } from '../utils/speech';
@@ -7,7 +7,8 @@ import {
   getStemAndEnding,
   formatSpokenConjugation,
 } from '../utils/frenchFormatting';
-import { Volume2, Bookmark, X, BookOpen, Sparkles, CheckCircle2 } from 'lucide-react';
+import { Volume2, Bookmark, X, BookOpen, Sparkles, CheckCircle2, Loader2, RotateCw } from 'lucide-react';
+import { VerbInfo, fetchVerbInfo, getSavedVerbInfo, needsVerbMeaning } from '../utils/verbMeanings';
 
 interface VerbDetailModalProps {
   verb: Verb | null;
@@ -27,7 +28,39 @@ export const VerbDetailModal: React.FC<VerbDetailModalProps> = ({
   const [selectedTense, setSelectedTense] = useState<TenseId>('present');
   const [playingItem, setPlayingItem] = useState<string | null>(null);
 
+  // Library verbs without a built-in translation: look the meaning up (once, then saved).
+  const missingMeaning = !!verb && needsVerbMeaning(verb.english);
+  const [verbInfo, setVerbInfo] = useState<VerbInfo | null>(null);
+  const [infoLoading, setInfoLoading] = useState(false);
+  const [infoError, setInfoError] = useState('');
+  const [infoAttempt, setInfoAttempt] = useState(0);
+
+  useEffect(() => {
+    setVerbInfo(null);
+    setInfoError('');
+    if (!verb || !missingMeaning) return;
+    const saved = getSavedVerbInfo(verb.infinitive);
+    if (saved) {
+      setVerbInfo(saved);
+      return;
+    }
+    const controller = new AbortController();
+    setInfoLoading(true);
+    fetchVerbInfo(verb.infinitive, controller.signal)
+      .then((info) => !controller.signal.aborted && setVerbInfo(info))
+      .catch((err) => !controller.signal.aborted && setInfoError(err instanceof Error ? err.message : 'Could not look up this verb'))
+      .finally(() => !controller.signal.aborted && setInfoLoading(false));
+    return () => controller.abort();
+  }, [verb?.infinitive, missingMeaning, infoAttempt]);
+
   if (!verb) return null;
+
+  const englishMeaning = verbInfo?.english ?? (missingMeaning ? null : verb.english);
+  const example = missingMeaning
+    ? verbInfo?.example?.fr
+      ? verbInfo.example
+      : null
+    : verb.example;
 
   const currentTenseMeta = TENSES.find((t) => t.id === selectedTense) || TENSES[0];
   const forms = verb.conjugations[selectedTense] || [];
@@ -103,9 +136,24 @@ export const VerbDetailModal: React.FC<VerbDetailModalProps> = ({
                 <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-amber-500' : ''}`} />
               </button>
             </div>
-            <p className="text-lg text-stone-600 italic font-serif mt-1">
-              "{verb.english}"
-            </p>
+            {englishMeaning ? (
+              <p className="text-lg text-stone-600 italic font-serif mt-1">"{englishMeaning}"</p>
+            ) : infoLoading ? (
+              <p className="flex items-center gap-2 text-sm text-indigo-700 mt-2" role="status">
+                <Loader2 className="w-4 h-4 animate-spin" /> Looking up the English meaning…
+              </p>
+            ) : infoError ? (
+              <p className="flex flex-wrap items-center gap-2 text-sm text-rose-700 mt-2">
+                {infoError}
+                <button
+                  type="button"
+                  onClick={() => setInfoAttempt((n) => n + 1)}
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-semibold text-rose-800 bg-rose-100 hover:bg-rose-200"
+                >
+                  <RotateCw className="w-3 h-3" /> Try again
+                </button>
+              </p>
+            ) : null}
 
             {/* Verb characteristics metadata */}
             <div className="flex flex-wrap gap-2 mt-3 text-xs">
@@ -214,6 +262,12 @@ export const VerbDetailModal: React.FC<VerbDetailModalProps> = ({
 
           {/* Pedagogy Note & Example Sentence */}
           <div className="mt-4 p-4 rounded-xl bg-amber-50/60 border border-amber-200/70 space-y-2">
+            {verbInfo?.note && (
+              <div className="flex items-start gap-2.5">
+                <BookOpen className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
+                <p className="text-xs text-indigo-900 leading-relaxed font-medium">{verbInfo.note}</p>
+              </div>
+            )}
             {verb.tip && (
               <div className="flex items-start gap-2.5">
                 <Sparkles className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
@@ -222,25 +276,32 @@ export const VerbDetailModal: React.FC<VerbDetailModalProps> = ({
                 </p>
               </div>
             )}
+            {example ? (
             <div className="flex items-start gap-2.5 pt-1 border-t border-amber-200/50">
               <BookOpen className="w-4 h-4 text-stone-500 shrink-0 mt-0.5" />
               <div className="text-xs space-y-0.5">
                 <p className="font-serif text-stone-900 text-sm italic">
-                  "{verb.example.fr}"
+                  "{example.fr}"
                 </p>
                 <p className="text-stone-600">
-                  {verb.example.en}
+                  {example.en}
                 </p>
               </div>
               <button
                 type="button"
-                onClick={() => handleSpeak(verb.example.fr, 'example')}
+                onClick={() => handleSpeak(example.fr, 'example')}
                 className="ml-auto p-1 text-stone-400 hover:text-stone-700 rounded transition-colors"
                 title="Pronounce example sentence"
               >
                 <Volume2 className="w-3.5 h-3.5 text-stone-600" />
               </button>
             </div>
+            ) : infoLoading ? (
+              <div className="pt-2 border-t border-amber-200/50 space-y-1.5 animate-pulse">
+                <div className="h-3.5 w-2/3 rounded bg-amber-100" />
+                <div className="h-3 w-1/2 rounded bg-amber-100" />
+              </div>
+            ) : null}
           </div>
         </div>
 

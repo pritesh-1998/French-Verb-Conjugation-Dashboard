@@ -3,7 +3,7 @@ import path from 'path';
 import https from 'https';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import { explainFrench, ExplainError, explanationCacheSize } from './server/aiExplain';
+import { explainFrench, ExplainError, explanationCacheSize, lookupVerbInfo } from './server/aiExplain';
 
 dotenv.config();
 
@@ -197,6 +197,30 @@ app.post('/api/french/explain', async (req, res) => {
     }
     console.error('French explanation error:', err?.message || err);
     res.status(500).json({ error: 'Could not explain this text', retryable: true });
+  }
+});
+
+/**
+ * English meaning + example for a library verb that has no built-in translation.
+ * POST /api/french/verb-info { infinitive: "papoter" }
+ */
+app.post('/api/french/verb-info', async (req, res) => {
+  const infinitive = typeof req.body?.infinitive === 'string' ? req.body.infinitive.trim() : '';
+  if (!infinitive || infinitive.length > 60 || !/^[\p{L}' -]+$/u.test(infinitive)) {
+    res.status(400).json({ error: 'Send one French verb infinitive' });
+    return;
+  }
+  try {
+    const { info, source } = await lookupVerbInfo(infinitive);
+    res.set({ 'X-Explain-Model': source, 'Access-Control-Expose-Headers': 'X-Explain-Model' });
+    res.json(info);
+  } catch (err: any) {
+    if (err instanceof ExplainError) {
+      res.status(err.status).json({ error: err.message, retryable: err.retryable });
+      return;
+    }
+    console.error('Verb info error:', err?.message || err);
+    res.status(500).json({ error: 'Could not look up this verb', retryable: true });
   }
 });
 

@@ -2,6 +2,7 @@ import { conjugate } from 'conjugation-fr';
 import verbsListJson from 'conjugation-fr/verbs-fr.json';
 import { Verb, ConjugationForm, TenseId, VerbGroup, AuxiliaryVerb, VerbProgress } from '../types';
 import { ALL_VERBS } from '../data/allVerbs';
+import { getSavedVerbInfo } from './verbMeanings';
 
 // Map of all 7,014 verbs in the French database
 const VERB_ENTRIES = verbsListJson as unknown as Record<string, { t: string; aux?: string | string[] }>;
@@ -229,7 +230,11 @@ export function getEnglishTranslation(infinitive: string): string {
     return `to un-${COMMON_TRANSLATIONS[infinitive.slice(2)].replace(/^to\s+/, '')}`;
   }
 
-  // Format cleanly as "to [verb]"
+  // A meaning looked up earlier with AI (see verbMeanings.ts)
+  const saved = getSavedVerbInfo(infinitive);
+  if (saved) return saved.english;
+
+  // Placeholder: the verb modal looks up the real meaning when this verb is opened
   return `to ${infinitive} (French verb)`;
 }
 
