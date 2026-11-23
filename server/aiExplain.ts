@@ -48,7 +48,8 @@ const REQUEST_TIMEOUT_MS = 20000;
 // If a model has not answered after this long, a backup model starts in parallel and the
 // first valid answer wins (the slower request is cancelled). Free models are often queued,
 // so this cuts the worst-case wait a lot. Override with EXPLAIN_HEDGE_MS.
-const HEDGE_DELAY_MS = Number(process.env.EXPLAIN_HEDGE_MS) || 6000;
+// 10 s keeps quota use low: a parallel backup request also counts toward the 50/day free limit.
+const HEDGE_DELAY_MS = Number(process.env.EXPLAIN_HEDGE_MS) || 10000;
 
 const CACHE_FILE = process.env.EXPLAIN_CACHE_FILE || path.join(process.cwd(), '.cache', 'explanations.json');
 const MAX_CACHE_ENTRIES = 5000;
@@ -185,7 +186,7 @@ async function tryOpenRouter<T>(task: Task<T>, apiKey: string, model: string, si
         provider,
         error: `HTTP ${response.status}: ${body.slice(0, 200)}`,
         rateLimited: response.status === 429,
-        accountLimit: /openrouter_free_tier_(daily|per_minute)/.test(body),
+        accountLimit: /openrouter_free_tier_(daily|per_minute)|free-models-per-(day|min)/i.test(body),
       };
     }
     const payload = (await response.json()) as {
@@ -213,8 +214,13 @@ async function tryOpenRouter<T>(task: Task<T>, apiKey: string, model: string, si
   }
 }
 
-async function tryGemini<T>(task: Task<T>, apiKey: string, signal: AbortSignal): Promise<Outcome<T>> {
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+// Google retires model ids for new users, so default to its "-latest" aliases.
+const GEMINI_MODELS = (process.env.GEMINI_MODEL || 'gemini-flash-lite-latest,gemini-flash-latest')
+  .split(',')
+  .map((m) => m.trim())
+  .filter(Boolean);
+
+async function tryGemini<T>(task: Task<T>, apiKey: string, signal: AbortSignal, model: string): Promise<Outcome<T>> {
   const provider = `gemini:${model}`;
   try {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -332,6 +338,8 @@ function raceCandidates<T>(candidates: Candidate<T>[], attempts: Attempt[]): Pro
   });
 }
 
+let openRouterDailyLimitUntil = 0;
+
 async function runProviders<T>(task: Task<T>): Promise<Answer<T>> {
   const openRouterKey = process.env.OPENROUTER_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
@@ -347,19 +355,33 @@ async function runProviders<T>(task: Task<T>): Promise<Answer<T>> {
   const attempts: Attempt[] = [];
   const candidates: Candidate<T>[] = [];
 
-  if (openRouterKey) {
+  // After OpenRouter reports the daily free limit, skip it until the reset (00:00 UTC)
+  // and go straight to the backup, instead of waiting on a refusal every time.
+  const openRouterPaused = Date.now() < openRouterDailyLimitUntil;
+  if (openRouterPaused) {
+    attempts.push({ provider: 'openrouter', error: 'skipped: free-models-per-day limit reached earlier today', rateLimited: true, accountLimit: true });
+  }
+
+  if (openRouterKey && !openRouterPaused) {
     for (const model of models.length ? models : DEFAULT_OPENROUTER_MODELS) {
       candidates.push({ source: model, run: (signal) => tryOpenRouter(task, openRouterKey, model, signal) });
     }
   }
   const answer = await raceCandidates(candidates, attempts);
   if (answer) return answer;
+  if (attempts.some((a) => /free-models-per-day|openrouter_free_tier_daily/i.test(a.error))) {
+    const reset = new Date();
+    reset.setUTCHours(24, 0, 0, 0);
+    openRouterDailyLimitUntil = reset.getTime();
+  }
 
   if (geminiKey) {
-    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
-    const result = await tryGemini(task, geminiKey, new AbortController().signal);
-    if ('ok' in result) return { value: result.ok, source: `gemini:${model}` };
-    attempts.push(result);
+    for (const model of GEMINI_MODELS) {
+      const result = await tryGemini(task, geminiKey, new AbortController().signal, model);
+      if ('ok' in result) return { value: result.ok, source: `gemini:${model}` };
+      attempts.push(result);
+      if (!/HTTP 404/.test(result.error)) break; // only a retired/unknown model is worth trying the next id
+    }
   }
 
   console.error('All AI providers failed:', attempts);
@@ -381,7 +403,11 @@ const shortModel = (provider: string) =>
 export function describeFailure(attempts: Attempt[]): string {
   const all = attempts.map((a) => a.error).join('\n');
   let hint = 'The free AI models are busy or unavailable right now. Please try again in a minute.';
-  if (/HTTP 401|No auth|User not found|invalid.*key/i.test(all)) {
+  if (/free-models-per-day|openrouter_free_tier_daily/i.test(all)) {
+    hint =
+      "You've used today's 50 free OpenRouter requests. They reset at 00:00 UTC (7 PM in Toronto). " +
+      'Saved answers still work. Adding $10 of OpenRouter credits once raises the limit to 1,000 a day.';
+  } else if (/HTTP 401|No auth|User not found|invalid.*key/i.test(all)) {
     hint = 'OpenRouter rejected the API key. Check OPENROUTER_API_KEY in your .env file (no quotes or spaces), then restart the server.';
   } else if (/HTTP 402/.test(all)) {
     hint = 'OpenRouter says the account balance is negative, which blocks free models too. Check openrouter.ai/settings/credits.';
