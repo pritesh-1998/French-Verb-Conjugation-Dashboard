@@ -39,18 +39,42 @@ function writeCache(key: string, value: Explanation): void {
   }
 }
 
-export async function fetchExplanation(text: string): Promise<Explanation> {
+export interface ExplanationResult {
+  explanation: Explanation;
+  /** "browser cache", "cache" (server), or the AI model that answered. */
+  source: string;
+  /** Total wait in the browser, in milliseconds. */
+  ms: number;
+}
+
+const prettyModel = (source: string) =>
+  source
+    .replace(/^nvidia\//, '')
+    .replace(/:free$/, '')
+    .replace(/^nemotron-3\.5-lightning$/, 'Nemotron Lightning')
+    .replace(/^nemotron-3-ultra-550b-a55b$/, 'Nemotron Ultra')
+    .replace(/^nemotron-3\.5-super-vl$/, 'Nemotron Super')
+    .replace(/^openrouter\/free$/, 'OpenRouter free model');
+
+export async function fetchExplanation(text: string, signal?: AbortSignal): Promise<ExplanationResult> {
+  const started = performance.now();
   const key = keyFor(text);
   const cached = readCache()[key];
-  if (cached) return cached;
+  if (cached) return { explanation: cached, source: 'saved answer', ms: 0 };
 
   const response = await fetch('/api/french/explain', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
+    signal,
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || 'Could not explain this text');
   writeCache(key, data);
-  return data as Explanation;
+  const model = response.headers.get('X-Explain-Model') || '';
+  return {
+    explanation: data as Explanation,
+    source: model === 'cache' ? 'saved answer' : prettyModel(model) || 'AI',
+    ms: Math.round(performance.now() - started),
+  };
 }

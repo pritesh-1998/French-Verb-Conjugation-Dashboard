@@ -43,6 +43,10 @@ const DEFAULT_OPENROUTER_MODELS = [
 ];
 
 const REQUEST_TIMEOUT_MS = 20000;
+// If a model has not answered after this long, a backup model starts in parallel and the
+// first valid answer wins (the slower request is cancelled). Free models are often queued,
+// so this cuts the worst-case wait a lot. Override with EXPLAIN_HEDGE_MS.
+const HEDGE_DELAY_MS = Number(process.env.EXPLAIN_HEDGE_MS) || 6000;
 
 const CACHE_FILE = process.env.EXPLAIN_CACHE_FILE || path.join(process.cwd(), '.cache', 'explanations.json');
 const MAX_CACHE_ENTRIES = 5000;
@@ -94,7 +98,7 @@ Reply with ONLY one JSON object, no markdown, in exactly this shape:
   "example": "one short natural French example sentence",
   "exampleMeaning": "English meaning of the example"
 }
-For sentences, give 3-6 vocabulary entries for the core words. For a single word, focus on meaning, pronunciation, gender if it is a noun, and usage.`;
+Keep every field short (one or two sentences). For sentences, give 3-5 vocabulary entries for the core words. For a single word, focus on meaning, pronunciation, gender if it is a noun, and usage.`;
 }
 
 // Free models do not all support JSON mode, so pull the first {...} block out of the reply.
@@ -136,7 +140,7 @@ interface Attempt {
   accountLimit?: boolean;
 }
 
-async function tryOpenRouter(text: string, apiKey: string, model: string): Promise<Explanation | Attempt> {
+async function tryOpenRouter(text: string, apiKey: string, model: string, signal: AbortSignal): Promise<Explanation | Attempt> {
   const provider = `openrouter:${model}`;
   try {
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -155,7 +159,7 @@ async function tryOpenRouter(text: string, apiKey: string, model: string): Promi
         reasoning: { effort: 'low', exclude: true },
         max_tokens: 2000,
       }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -177,11 +181,11 @@ async function tryOpenRouter(text: string, apiKey: string, model: string): Promi
     const parsed = parseExplanation(payload.choices?.[0]?.message?.content);
     return parsed ?? { provider, error: 'reply was not valid JSON', rateLimited: false };
   } catch (err: any) {
-    return { provider, error: err?.name === 'TimeoutError' ? 'timed out' : String(err?.message || err), rateLimited: false };
+    return { provider, error: err?.name === 'TimeoutError' ? 'timed out' : err?.name === 'AbortError' ? 'cancelled (another model answered)' : String(err?.message || err), rateLimited: false };
   }
 }
 
-async function tryGemini(text: string, apiKey: string): Promise<Explanation | Attempt> {
+async function tryGemini(text: string, apiKey: string, signal: AbortSignal): Promise<Explanation | Attempt> {
   const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
   const provider = `gemini:${model}`;
   try {
@@ -192,7 +196,7 @@ async function tryGemini(text: string, apiKey: string): Promise<Explanation | At
         contents: [{ parts: [{ text: buildPrompt(text) }] }],
         generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
       }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
     });
     if (!response.ok) {
       const body = await response.text();
@@ -204,16 +208,31 @@ async function tryGemini(text: string, apiKey: string): Promise<Explanation | At
     const parsed = parseExplanation(payload.candidates?.[0]?.content?.parts?.[0]?.text);
     return parsed ?? { provider, error: 'reply was not valid JSON', rateLimited: false };
   } catch (err: any) {
-    return { provider, error: err?.name === 'TimeoutError' ? 'timed out' : String(err?.message || err), rateLimited: false };
+    return { provider, error: err?.name === 'TimeoutError' ? 'timed out' : err?.name === 'AbortError' ? 'cancelled (another model answered)' : String(err?.message || err), rateLimited: false };
   }
 }
 
-const inFlight = new Map<string, Promise<Explanation>>();
+export interface ExplainResult {
+  explanation: Explanation;
+  cached: boolean;
+  /** Which provider/model answered ("cache" for a cached answer). */
+  source: string;
+  /** Server-side time spent getting the answer. */
+  ms: number;
+}
 
-export async function explainFrench(text: string): Promise<{ explanation: Explanation; cached: boolean }> {
+interface Answer {
+  explanation: Explanation;
+  source: string;
+}
+
+const inFlight = new Map<string, Promise<Answer>>();
+
+export async function explainFrench(text: string): Promise<ExplainResult> {
+  const started = Date.now();
   const key = cacheKeyFor(text);
   const hit = loadCache().get(key);
-  if (hit) return { explanation: hit, cached: true };
+  if (hit) return { explanation: hit, cached: true, source: 'cache', ms: Date.now() - started };
 
   // Two identical requests at once share one AI call.
   let pending = inFlight.get(key);
@@ -221,11 +240,63 @@ export async function explainFrench(text: string): Promise<{ explanation: Explan
     pending = runProviders(text).finally(() => inFlight.delete(key));
     inFlight.set(key, pending);
   }
-  const explanation = await pending;
-  return { explanation, cached: false };
+  const answer = await pending;
+  return { ...answer, cached: false, ms: Date.now() - started };
 }
 
-async function runProviders(text: string): Promise<Explanation> {
+type Candidate = { source: string; run: (signal: AbortSignal) => Promise<Explanation | Attempt> };
+
+/**
+ * Staggered race: start the first model; if it has not answered within HEDGE_DELAY_MS,
+ * start the next one too (or immediately, if the first one already failed). The first
+ * valid answer wins and the other requests are cancelled.
+ */
+function raceCandidates(candidates: Candidate[], attempts: Attempt[]): Promise<Answer | null> {
+  return new Promise((resolve) => {
+    const controller = new AbortController();
+    let next = 0;
+    let running = 0;
+    let done = false;
+    let hedgeTimer: NodeJS.Timeout | null = null;
+    let stopLaunching = false;
+
+    const finish = (answer: Answer | null) => {
+      if (done) return;
+      done = true;
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      controller.abort();
+      resolve(answer);
+    };
+
+    const launch = () => {
+      if (done || stopLaunching || next >= candidates.length) {
+        if (running === 0) finish(null);
+        return;
+      }
+      const candidate = candidates[next++];
+      running++;
+      const startedAt = Date.now();
+      if (hedgeTimer) clearTimeout(hedgeTimer);
+      hedgeTimer = setTimeout(launch, HEDGE_DELAY_MS);
+      candidate.run(controller.signal).then((result) => {
+        running--;
+        if (done) return;
+        if ('translation' in result) {
+          console.log(`Explanation from ${candidate.source} in ${Date.now() - startedAt} ms`);
+          finish({ explanation: result, source: candidate.source });
+          return;
+        }
+        attempts.push(result);
+        if (result.accountLimit) stopLaunching = true;
+        launch(); // a failure starts the next model right away
+      });
+    };
+
+    launch();
+  });
+}
+
+async function runProviders(text: string): Promise<Answer> {
   const openRouterKey = process.env.OPENROUTER_API_KEY;
   const geminiKey = process.env.GEMINI_API_KEY;
   if (!openRouterKey && !geminiKey) {
@@ -238,18 +309,26 @@ async function runProviders(text: string): Promise<Explanation> {
 
   const models = (process.env.OPENROUTER_MODELS || '').split(',').map((m) => m.trim()).filter(Boolean);
   const attempts: Attempt[] = [];
+  const candidates: Candidate[] = [];
 
   if (openRouterKey) {
     for (const model of models.length ? models : DEFAULT_OPENROUTER_MODELS) {
-      const result = await tryOpenRouter(text, openRouterKey, model);
-      if ('translation' in result) return remember(text, result);
-      attempts.push(result);
-      if (result.accountLimit) break;
+      candidates.push({ source: model, run: (signal) => tryOpenRouter(text, openRouterKey, model, signal) });
     }
   }
+  const answer = await raceCandidates(candidates, attempts);
+  if (answer) {
+    remember(text, answer.explanation);
+    return answer;
+  }
+
   if (geminiKey) {
-    const result = await tryGemini(text, geminiKey);
-    if ('translation' in result) return remember(text, result);
+    const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
+    const result = await tryGemini(text, geminiKey, new AbortController().signal);
+    if ('translation' in result) {
+      remember(text, result);
+      return { explanation: result, source: `gemini:${model}` };
+    }
     attempts.push(result);
   }
 

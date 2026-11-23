@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { ArrowRight, Search, Sparkles, Volume2, X } from 'lucide-react';
 import { Verb } from '../types';
 import {
@@ -8,6 +8,7 @@ import {
 } from '../utils/conjugator';
 import { speakFrench } from '../utils/speech';
 import { fetchExplanation } from '../utils/explainClient';
+import { ExplainLoading, ExplainSourceNote } from './ExplainLoading';
 import type { VerbSearchResults } from '../hooks/useVerbSearch';
 
 interface Explanation {
@@ -40,6 +41,16 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [resultLabel, setResultLabel] = useState('');
+  const [pendingText, setPendingText] = useState('');
+  const [answerMeta, setAnswerMeta] = useState<{ source: string; ms: number } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const cancelExplain = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setLoading(false);
+    setResultLabel('');
+  };
 
   const suggestions = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -65,17 +76,28 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
   }, [searchQuery, searchResults]);
 
   const explainText = async (text: string) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
+    setPendingText(text);
     setError('');
     setExplanation(null);
+    setAnswerMeta(null);
     setResultLabel('Language explanation');
     try {
-      const data = await fetchExplanation(text);
-      setExplanation(data);
+      const result = await fetchExplanation(text, controller.signal);
+      if (controller.signal.aborted) return;
+      setExplanation(result.explanation);
+      setAnswerMeta({ source: result.source, ms: result.ms });
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : 'Could not explain this text');
     } finally {
-      setLoading(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setLoading(false);
+      }
     }
   };
 
@@ -153,7 +175,7 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
           placeholder="Try “être”, “allons”, “célèbre”, or “je suis célibataire”"
           className="w-full pl-12 pr-24 py-3.5 rounded-xl border border-stone-300 bg-stone-50 text-sm sm:text-base focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-400"
         />
-        {searchQuery && (
+        {searchQuery && !loading && (
           <button
             type="button"
             onClick={() => onSearchChange('')}
@@ -192,15 +214,19 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
         )}
       </div>
 
-      {resultLabel && !explanation && (
+      {resultLabel && !explanation && !loading && (
         <p className="text-xs font-semibold text-indigo-700">{resultLabel}</p>
       )}
+
+      {loading && <ExplainLoading text={pendingText} onCancel={cancelExplain} />}
 
       {error && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
           {error}
         </div>
       )}
+
+      {explanation && answerMeta && <ExplainSourceNote source={answerMeta.source} ms={answerMeta.ms} />}
 
       {explanation && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pt-1">

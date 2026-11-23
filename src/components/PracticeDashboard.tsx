@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarDays,
   Check,
@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { speakFrench } from '../utils/speech';
 import { fetchExplanation } from '../utils/explainClient';
+import { ExplainLoading, ExplainSourceNote } from './ExplainLoading';
 
 interface PracticeDashboardProps {
   searchQuery: string;
@@ -66,6 +67,15 @@ export const PracticeDashboard: React.FC<PracticeDashboardProps> = ({
   const [explanation, setExplanation] = useState<Explanation | null>(null);
   const [explanationLoading, setExplanationLoading] = useState(false);
   const [explanationError, setExplanationError] = useState('');
+  const [pendingText, setPendingText] = useState('');
+  const [answerMeta, setAnswerMeta] = useState<{ source: string; ms: number } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const cancelExplain = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setExplanationLoading(false);
+  };
 
   useEffect(() => {
     if (!running) return;
@@ -94,16 +104,27 @@ export const PracticeDashboard: React.FC<PracticeDashboardProps> = ({
   const explainText = async (text = searchQuery) => {
     const query = text.trim();
     if (!query) return;
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setExplanationLoading(true);
+    setPendingText(query);
     setExplanationError('');
     setExplanation(null);
+    setAnswerMeta(null);
     try {
-      const data = await fetchExplanation(query);
-      setExplanation(data);
+      const result = await fetchExplanation(query, controller.signal);
+      if (controller.signal.aborted) return;
+      setExplanation(result.explanation);
+      setAnswerMeta({ source: result.source, ms: result.ms });
     } catch (error) {
+      if (controller.signal.aborted) return;
       setExplanationError(error instanceof Error ? error.message : 'Could not explain that text');
     } finally {
-      setExplanationLoading(false);
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setExplanationLoading(false);
+      }
     }
   };
 
@@ -297,9 +318,13 @@ export const PracticeDashboard: React.FC<PracticeDashboardProps> = ({
             )}
           </div>
 
+          {explanationLoading && <ExplainLoading text={pendingText} onCancel={cancelExplain} />}
+
           {explanationError && (
             <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{explanationError}</div>
           )}
+
+          {explanation && answerMeta && <ExplainSourceNote source={answerMeta.source} ms={answerMeta.ms} />}
 
           {explanation && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
