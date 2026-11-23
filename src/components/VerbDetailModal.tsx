@@ -144,7 +144,7 @@ export const VerbDetailModal: React.FC<VerbDetailModalProps> = ({
               </p>
             ) : infoError ? (
               <p className="flex flex-wrap items-center gap-2 text-sm text-rose-700 mt-2">
-                {infoError}
+                {infoError.split("\n")[0]}
                 <button
                   type="button"
                   onClick={() => setInfoAttempt((n) => n + 1)}

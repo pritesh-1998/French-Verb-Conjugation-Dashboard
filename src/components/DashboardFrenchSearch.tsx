@@ -221,7 +221,7 @@ export const DashboardFrenchSearch: React.FC<DashboardFrenchSearchProps> = ({
       {loading && <ExplainLoading text={pendingText} onCancel={cancelExplain} />}
 
       {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 whitespace-pre-line break-words">
           {error}
         </div>
       )}

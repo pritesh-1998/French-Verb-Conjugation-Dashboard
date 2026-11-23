@@ -3,7 +3,7 @@ import path from 'path';
 import https from 'https';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
-import { explainFrench, ExplainError, explanationCacheSize, lookupVerbInfo } from './server/aiExplain';
+import { explainFrench, ExplainError, explanationCacheSize, lookupVerbInfo, checkOpenRouterKey } from './server/aiExplain';
 
 dotenv.config();
 
@@ -222,6 +222,14 @@ app.post('/api/french/verb-info', async (req, res) => {
     console.error('Verb info error:', err?.message || err);
     res.status(500).json({ error: 'Could not look up this verb', retryable: true });
   }
+});
+
+/**
+ * AI setup check: open http://localhost:3000/api/ai/check in the browser.
+ * Shows whether the OpenRouter key works and today's free-request usage.
+ */
+app.get('/api/ai/check', async (_req, res) => {
+  res.json(await checkOpenRouterKey());
 });
 
 async function startServer() {
